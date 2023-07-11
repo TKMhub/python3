@@ -1,8 +1,10 @@
+import contextlib
 import hashlib
 import json
 import logging
 import sys
 import time
+import threading
 
 from ecdsa import NIST256p
 from ecdsa import VerifyingKey
@@ -19,11 +21,12 @@ logger = logging.getLogger(__name__)
 
 class BlockChain(object):
 
-    def __init__(self, blockchain_address=None):
+    def __init__(self, blockchain_address=None, port=None):
         self.transaction_pool = []
         self.chain = []
         self.create_block(0, self.hash({}))
         self.blockchain_address = blockchain_address
+        self.port = port
 
     def create_block(self, nonce, previous_hash):
         block = utils.sorted_dict_by_key({
@@ -62,6 +65,20 @@ class BlockChain(object):
             self.transaction_pool.append(transaction)
             return True
         return False
+
+    def create_transaction(self, sender_blockchain_address, recipient_blockchain_address, value,
+                        sender_public_key, signature):
+        is_transacted = self.add_transaction(
+            sender_blockchain_address,
+            recipient_blockchain_address,
+            value,
+            sender_public_key,
+            signature)
+
+        # TODO
+        # Sync 127.0.0.1:5002
+
+        return is_transacted
 
     def verify_transaction_signature(self, sender_public_key, signature, transaction):
         sha256 = hashlib.sha256()
