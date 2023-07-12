@@ -8,12 +8,20 @@ import threading
 
 from ecdsa import NIST256p
 from ecdsa import VerifyingKey
+import requests
 
 import utils
 
 MINING_DIFFICULTY = 3
 MINING_SENDER = 'THE BLOCKCHAIN'
 MINING_REWARD = 1.0
+
+MINIG_TIMER_SEC = 20
+
+BLOCKCHAIN_PORT_RANGE = (5000, 5003)
+NEIGHBOURS_IP_RANGE_NUM = (0, 1)
+
+BLOCKCHAIN_NEIGHBOURS_SYNC_TIME_SEC = 20
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -24,9 +32,28 @@ class BlockChain(object):
     def __init__(self, blockchain_address=None, port=None):
         self.transaction_pool = []
         self.chain = []
+        self.neighbours = []
         self.create_block(0, self.hash({}))
         self.blockchain_address = blockchain_address
         self.port = port
+        self.minig.semaphone = threading.Semaphone(1)
+        self.sync_neighbours_semaphore = threading.Semaphore(1)
+
+    def set_neighbours(self):
+        self.neighbours = utils.find_neighbours(
+            utils.get_host(), self.port,
+            NEIGHBOURS_IP_RANGE_NUM[0], NEIGHBOURS_IP_RANGE_NUM[1],
+            BLOCKCHAIN_PORT_RANGE[0], BLOCKCHAIN_PORT_RANGE[1])
+        logger.info({'action': 'set_neighbours', 'neighbours': self.neighbours})
+
+    def sync_neighbours(self):
+        is_acquire = self.sync_neighbours_semaphore.acquire(blocking=False)
+        if is_acquire:
+            with contextlib.ExitStack() as stack:
+                stack.callback(self.sync_neighbours_semaphore.release)
+                self.set_neighbours()
+                loop = threading.Timer(BLOCKCHAIN_NEIGHBOURS_SYNC_TIME_SEC, self.sync_neighbours())
+                loop.start()
 
     def create_block(self, nonce, previous_hash):
         block = utils.sorted_dict_by_key({
@@ -37,6 +64,9 @@ class BlockChain(object):
         })
         self.chain.append(block)
         self.transaction_pool = []
+
+        for node in self.neighbours:
+            requests.delete(f'http://{node}/transactions')
         return block
 
     def hash(self, block):
@@ -75,8 +105,18 @@ class BlockChain(object):
             sender_public_key,
             signature)
 
-        # TODO
-        # Sync 127.0.0.1:5002
+        if is_transacted:
+            for node in self.neighbours:
+                requests.put(
+                    f'http://{node}/transactions',
+                    json={
+                        'sender_blockchain_address': sender_blockchain_address,
+                        'recipient_blockchain_address': recipient_blockchain_address,
+                        'value': value,
+                        'sender_public_key': sender_public_key,
+                        'signature': signature,
+                    }
+                )
 
         return is_transacted
 
@@ -109,6 +149,9 @@ class BlockChain(object):
         return nonce
 
     def mining(self):
+        if not self.transaction_pool:
+            return False
+
         self.add_transaction(
             sender_blockchain_address=MINING_SENDER,
             recipient_blockchain_address=self.blockchain_address,
@@ -119,6 +162,15 @@ class BlockChain(object):
         self.create_block(nonce, previous_hash)
         logger.info({'action': 'mining', 'status': 'success'})
         return True
+
+    def start_minig(self):
+        is_acquire = self.minig.aquire(blocking=False)
+        if is_acquire:
+            with contextlib.ExitStack() as stack:
+                stack.callback(self.minig_semaphore.release)
+                self.minig()
+                loop = threading.Timer(MINIG_TIMER_SEC, self.start_mining)
+                loop.start()
 
     def calculate_total_amount(self, blockchain_address):
         total_amount = 0.0
